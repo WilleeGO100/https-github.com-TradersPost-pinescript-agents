@@ -1,0 +1,22 @@
+{
+  "name": "pinescript-agents",
+  "version": "1.4.0",
+  "description": "Codex Pine Script Development Assistant - A comprehensive tool for creating TradingView indicators and strategies",
+  "keywords": [
+    "pinescript",
+    "tradingview",
+    "trading",
+    "indicators",
+    "strategies",
+    "codex",
+    "openai",
+    "ai-assistant"
+  ],
+  "author": "",
+  "license": "MIT",
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TradersPost/pinescript-agents.git"
+  }
+}

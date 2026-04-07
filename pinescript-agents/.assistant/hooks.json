@@ -1,0 +1,8 @@
+{
+  "startup": ".assistant/hooks/startup.sh",
+  "user-prompt-submit": ".assistant/hooks/user-prompt-submit.sh",
+  "before-write": ".assistant/hooks/before-write.sh",
+  "before-delete": ".assistant/hooks/before-delete.sh",
+  "after-edit": ".assistant/hooks/after-edit.sh",
+  "after-rename": ".assistant/hooks/after-rename.sh"
+}

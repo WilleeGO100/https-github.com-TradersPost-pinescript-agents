@@ -1,0 +1,18 @@
+# Pine Script Development Assistant - Dependencies
+# Install with: pip install -r requirements.txt
+
+# YouTube video download and metadata
+yt-dlp>=2024.1.0
+
+# YouTube captions extraction (fast, preferred method)
+youtube-transcript-api>=0.6.0
+
+# Audio transcription (fallback when captions unavailable)
+# Note: Whisper is optional - only needed if video has no captions
+# Install with: pip install openai-whisper
+# openai-whisper>=20231117
+
+# FFmpeg is required for audio extraction (system dependency)
+# macOS: brew install ffmpeg
+# Ubuntu: sudo apt install ffmpeg
+# Windows: Download from https://ffmpeg.org/download.html
