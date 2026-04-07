@@ -11,7 +11,7 @@ Use this repo as a production workspace with:
 
 1. Clone and enter the project
 ```bash
-git clone https://github.com/TradersPost/pinescript-agents.git
+git clone https://github.com/WilleeGO100/Pinescript_Codex_Studio.git
 cd pinescript-agents
 ```
 
