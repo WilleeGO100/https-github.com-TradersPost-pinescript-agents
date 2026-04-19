@@ -1,0 +1,258 @@
+//@version=6
+strategy("bO_qQi-NJEo 9/21 Scalping Strategy [Profile Toggle]", overlay=true, initial_capital=100000, pyramiding=0, process_orders_on_close=false, calc_on_order_fills=true, use_bar_magnifier=true, commission_type=strategy.commission.percent, commission_value=0.04, slippage=2, default_qty_type=strategy.fixed, default_qty_value=1)
+
+// Generated from:
+// projects/analysis/analysis_bO_qQi-NJEo_20260412_175501.json
+// Inferred core logic:
+// 1) 9/21 EMA trend context.
+// 2) Pullback entry when candle closes between EMAs.
+// 3) RSI momentum filter around level 50.
+// 4) Partial take profit and runner exit.
+
+groupProfile = "Profile"
+groupSignal = "Signal Rules"
+groupRisk = "Risk"
+groupExecution = "Execution"
+groupDisplay = "Display"
+groupGex = "GEX Filter"
+groupAutomation = "Hyperliquid Alerts"
+
+profilePreset = input.string("Manual", "Profile Preset", options=["Manual", "Balanced", "Conservative", "Aggressive", "Trend", "Retest"], group=groupProfile, tooltip="Switch between pre-tuned parameter sets for quick testing.")
+
+fastLenInput = input.int(9, "Fast EMA", minval=1, group=groupSignal)
+slowLenInput = input.int(21, "Slow EMA", minval=2, group=groupSignal)
+rsiLenInput = input.int(14, "RSI Length", minval=2, group=groupSignal)
+rsiLevelInput = input.float(50.0, "RSI Midline", minval=1, maxval=99, step=0.5, group=groupSignal)
+requirePullbackColorInput = input.bool(true, "Require Pullback Candle Color", group=groupSignal, tooltip="Long uses red pullback candle, short uses green pullback candle.")
+useRsiFilterInput = input.bool(true, "Use RSI Filter", group=groupSignal)
+
+pipSize = input.float(0.4, "Pip/Tick Size", minval=0.00001, step=0.00001, group=groupRisk, tooltip="NQ is often 0.25. Adjust per instrument.")
+maxEntryPipsInput = input.float(5.0, "Max Entry Distance (pips)", minval=0.1, step=0.1, group=groupRisk)
+tp1PipsInput = input.float(10.0, "TP1 (pips)", minval=0.5, step=0.5, group=groupRisk)
+tp2PipsInput = input.float(20.0, "TP2 (pips)", minval=0.5, step=0.5, group=groupRisk)
+stopPipsInput = input.float(15.0, "Stop Loss (pips)", minval=0.5, step=0.5, group=groupRisk)
+tp1ClosePctInput = input.float(50.0, "TP1 Close %", minval=1, maxval=99, step=1, group=groupRisk)
+useMomentumExitInput = input.bool(true, "Exit Runner On Momentum Flip", group=groupRisk)
+
+contractsPerTrade = input.int(1, "Contracts Per Trade", minval=1, group=groupExecution)
+allowLongs = input.bool(true, "Allow Longs", group=groupExecution)
+allowShorts = input.bool(true, "Allow Shorts", group=groupExecution)
+
+showEntrySignals = input.bool(true, "Show Entry Markers", group=groupDisplay)
+showProfileTable = input.bool(true, "Show Profile Table", group=groupDisplay)
+
+useGexFilter = input.bool(true, "Use GEX Entry Filter", group=groupGex, tooltip="Long: net gamma > 0 and not near resistance. Short: net gamma <= 0 and not near support.")
+gexBandPts = input.float(20.0, "Near-Level Band (Points)", minval=0.25, step=0.25, group=groupGex)
+useGexExit = input.bool(true, "Use GEX Protective Exit", group=groupGex, tooltip="Closes long near overhead GEX resistance and short near lower GEX support.")
+useHistoricalGexDataset = input.bool(true, "Use Historical GEX Dataset", group=groupGex, tooltip="If enabled, strategy uses date-matched GEX levels from the historical dataset block when available.")
+requireMatchedHistoricalGex = input.bool(false, "Require Matched Historical GEX", group=groupGex, tooltip="If ON, strategy will only use GEX filters/exits when a same-day historical GEX row is matched.")
+applyGexToHistory = input.bool(false, "Apply GEX To Historical Bars", group=groupGex, tooltip="OFF = only apply GEX from Active-From date forward, to avoid distorting older history with current levels.")
+gexActiveFrom = input.time(1776038400000, "GEX Active From (Exchange Time)", group=groupGex)
+showGexLevels = input.bool(true, "Show Nearest GEX Levels", group=groupGex)
+
+enableWebhookAlerts = input.bool(false, "Enable Hyperliquid Webhook Alerts", group=groupAutomation)
+webhookSecret = input.string("REPLACE_ME", "Webhook Secret", group=groupAutomation)
+alertOrderUsd = input.float(50.0, "Alert USD Size", minval=1, step=1, group=groupAutomation)
+alertSlippage = input.float(0.01, "Alert Slippage", minval=0.001, step=0.001, group=groupAutomation)
+alertSymbolOverride = input.string("", "Alert Symbol Override", group=groupAutomation, tooltip="Leave blank to use base symbol from chart (for example BTC).")
+
+effectiveFastLen = profilePreset == "Manual" ? fastLenInput : profilePreset == "Conservative" ? 9 : profilePreset == "Aggressive" ? 8 : profilePreset == "Trend" ? 12 : profilePreset == "Retest" ? 9 : 9
+effectiveSlowLen = profilePreset == "Manual" ? slowLenInput : profilePreset == "Conservative" ? 24 : profilePreset == "Aggressive" ? 18 : profilePreset == "Trend" ? 30 : profilePreset == "Retest" ? 21 : 21
+effectiveRsiLen = profilePreset == "Manual" ? rsiLenInput : profilePreset == "Aggressive" ? 10 : 14
+effectiveRsiLevel = profilePreset == "Manual" ? rsiLevelInput : 50.0
+effectiveUseRsiFilter = profilePreset == "Manual" ? useRsiFilterInput : true
+effectiveRequirePullbackColor = profilePreset == "Manual" ? requirePullbackColorInput : true
+effectiveMaxEntryPips = profilePreset == "Manual" ? maxEntryPipsInput : profilePreset == "Conservative" ? 4.0 : profilePreset == "Aggressive" ? 7.0 : profilePreset == "Trend" ? 6.0 : profilePreset == "Retest" ? 5.0 : 5.0
+effectiveTp1Pips = profilePreset == "Manual" ? tp1PipsInput : profilePreset == "Conservative" ? 8.0 : profilePreset == "Aggressive" ? 12.0 : profilePreset == "Trend" ? 20.0 : 10.0
+effectiveTp2Pips = profilePreset == "Manual" ? tp2PipsInput : profilePreset == "Conservative" ? 15.0 : profilePreset == "Aggressive" ? 30.0 : profilePreset == "Trend" ? 60.0 : 20.0
+effectiveStopPips = profilePreset == "Manual" ? stopPipsInput : profilePreset == "Conservative" ? 12.0 : profilePreset == "Aggressive" ? 18.0 : profilePreset == "Trend" ? 30.0 : 15.0
+effectiveTp1ClosePct = profilePreset == "Manual" ? tp1ClosePctInput : profilePreset == "Aggressive" ? 40.0 : profilePreset == "Trend" ? 70.0 : 50.0
+effectiveUseMomentumExit = profilePreset == "Manual" ? useMomentumExitInput : true
+
+// --- BEGIN AUTO-GENERATED GEX BLOCK (NQ_NDX) ---
+// Source file: pinescript-agents/projects/analysis/gexbot_data/historical/gexbot_nq_ndx_top_levels_20260417.json
+// Symbol: "NQ_NDX"
+// Generated at UTC: "2026-04-19T06:14:13.395916+00:00"
+// Source URL: "https://api.gexbot.com/NQ_NDX/classic/zero?date=2026-04-17"
+float gexSpotNq = 26824.23
+string gexGeneratedAtNq = "2026-04-19T06:14:13.395916+00:00"
+string gexSourceUrlNq = "https://api.gexbot.com/NQ_NDX/classic/zero?date=2026-04-17"
+var float[] gexStrikesNq = array.from(26763.59, 26773.59, 26783.59, 26793.59, 26803.59, 26813.59, 26823.59, 26833.59, 26843.59, 26853.59, 26863.59, 26873.59, 26883.59, 26893.59, 26903.59)
+var float[] gexGammaNq = array.from(1567.57, 408.0, 5320.54, 3990.46, 5518.19, 14122.6, 44768.68, 17022.67, 520.59, 4802.01, 891.56, -430.14, 539.69, 392.63, 477.17)
+// --- END AUTO-GENERATED GEX BLOCK (NQ_NDX) ---
+
+// --- BEGIN AUTO-GENERATED HISTORICAL GEX DATASET (NQ_NDX) ---
+// day_key format: YYYYMMDD (exchange date)
+// pipe-delimited rows must align by index with gexHistDayKeysNq
+var int[] gexHistDayKeysNq = array.from(20260302, 20260303, 20260304, 20260305, 20260306, 20260309, 20260310, 20260311, 20260312, 20260313, 20260316, 20260317, 20260318, 20260319, 20260320, 20260323, 20260324, 20260325, 20260326, 20260327, 20260330, 20260331, 20260401, 20260402, 20260403, 20260406, 20260407, 20260408, 20260409, 20260410, 20260413, 20260417)
+var string[] gexHistStrikesCsvNq = array.from("25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "25460.07|25480.07|25500.07|25510.07|25520.07|25530.07|25540.07|25550.07|25560.07|25570.07", "26763.59|26773.59|26783.59|26793.59|26803.59|26813.59|26823.59|26833.59|26843.59|26853.59|26863.59|26873.59|26883.59|26893.59|26903.59")
+var string[] gexHistGammaCsvNq = array.from("6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "6586.72|5067.93|5506.04|7564.4|5557.22|13659.32|26145.47|20627.58|13392.73|1306.98", "1567.57|408.0|5320.54|3990.46|5518.19|14122.6|44768.68|17022.67|520.59|4802.01|891.56|-430.14|539.69|392.63|477.17")
+// --- END AUTO-GENERATED HISTORICAL GEX DATASET (NQ_NDX) ---
+
+f_parse_csv_to_float_array(string csv, float[] outArr) =>
+    array.clear(outArr)
+    tokens = str.split(csv, "|")
+    for i = 0 to array.size(tokens) - 1
+        v = str.tonumber(array.get(tokens, i))
+        if not na(v)
+            array.push(outArr, v)
+
+var float[] activeGexStrikes = array.new_float()
+var float[] activeGexGamma = array.new_float()
+var int loadedGexDayKey = na
+var bool matchedHistoricalToday = false
+
+dayKey = year(time) * 10000 + month(time) * 100 + dayofmonth(time)
+if na(loadedGexDayKey) or dayKey != loadedGexDayKey
+    loadedGexDayKey := dayKey
+    array.clear(activeGexStrikes)
+    array.clear(activeGexGamma)
+    matchedHistoricalToday := false
+
+    matchedHistory = false
+    if useHistoricalGexDataset and array.size(gexHistDayKeys) == array.size(gexHistStrikesCsv) and array.size(gexHistDayKeys) == array.size(gexHistGammaCsv)
+        for i = 0 to array.size(gexHistDayKeys) - 1
+            if array.get(gexHistDayKeys, i) == dayKey
+                f_parse_csv_to_float_array(array.get(gexHistStrikesCsv, i), activeGexStrikes)
+                f_parse_csv_to_float_array(array.get(gexHistGammaCsv, i), activeGexGamma)
+                matchedHistory := true
+                matchedHistoricalToday := true
+                break
+
+    if not matchedHistory and not requireMatchedHistoricalGex
+        for i = 0 to array.size(gexStrikes) - 1
+            array.push(activeGexStrikes, array.get(gexStrikes, i))
+            array.push(activeGexGamma, array.get(gexGamma, i))
+
+if array.size(activeGexStrikes) != array.size(activeGexGamma)
+    runtime.error("Active GEX arrays must have the same size.")
+gexDataReady = array.size(activeGexStrikes) > 0
+
+fastEma = ta.ema(close, effectiveFastLen)
+slowEma = ta.ema(close, effectiveSlowLen)
+rsi = ta.rsi(close, effectiveRsiLen)
+
+trendUp = fastEma > slowEma
+trendDown = fastEma < slowEma
+betweenEma = close <= math.max(fastEma, slowEma) and close >= math.min(fastEma, slowEma)
+pullbackRed = close < open
+pullbackGreen = close > open
+
+longMomentumOk = not effectiveUseRsiFilter or rsi > effectiveRsiLevel
+shortMomentumOk = not effectiveUseRsiFilter or rsi < effectiveRsiLevel
+
+entryRefLong = math.min(fastEma, slowEma)
+entryRefShort = math.max(fastEma, slowEma)
+distLongPips = math.abs(close - entryRefLong) / pipSize
+distShortPips = math.abs(close - entryRefShort) / pipSize
+longDistanceOk = distLongPips <= effectiveMaxEntryPips
+shortDistanceOk = distShortPips <= effectiveMaxEntryPips
+
+longPullbackOk = not effectiveRequirePullbackColor or pullbackRed
+shortPullbackOk = not effectiveRequirePullbackColor or pullbackGreen
+
+float netGex = 0.0
+float nearestAbove = na
+float nearestBelow = na
+for i = 0 to array.size(activeGexStrikes) - 1
+    strike = array.get(activeGexStrikes, i)
+    gamma = array.get(activeGexGamma, i)
+    netGex += gamma
+    if strike >= close and (na(nearestAbove) or strike < nearestAbove)
+        nearestAbove := strike
+    if strike <= close and (na(nearestBelow) or strike > nearestBelow)
+        nearestBelow := strike
+
+nearResistance = gexDataReady and not na(nearestAbove) and math.abs(close - nearestAbove) <= gexBandPts
+nearSupport = gexDataReady and not na(nearestBelow) and math.abs(close - nearestBelow) <= gexBandPts
+gexFilterActiveBar = useGexFilter and gexDataReady and (applyGexToHistory or time >= gexActiveFrom)
+gexExitActiveBar = useGexExit and gexDataReady and (applyGexToHistory or time >= gexActiveFrom)
+allowLongGex = not gexFilterActiveBar or (netGex > 0 and not nearResistance)
+allowShortGex = not gexFilterActiveBar or (netGex <= 0 and not nearSupport)
+
+longSignalBase = allowLongs and trendUp and betweenEma and longPullbackOk and longMomentumOk and longDistanceOk
+shortSignalBase = allowShorts and trendDown and betweenEma and shortPullbackOk and shortMomentumOk and shortDistanceOk
+longSignal = longSignalBase and allowLongGex
+shortSignal = shortSignalBase and allowShortGex
+
+buildPayload(string action) =>
+    resolvedSymbol = str.length(alertSymbolOverride) > 0 ? str.upper(alertSymbolOverride) : syminfo.basecurrency
+    '{"alert_id":"' + str.tostring(time) + '-' + action + '-' + syminfo.tickerid + '","secret":"' + webhookSecret + '","action":"' + action + '","symbol":"' + resolvedSymbol + '","usd_size":' + str.tostring(alertOrderUsd) + ',"slippage":' + str.tostring(alertSlippage) + '}'
+
+if longSignal and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long, qty=contractsPerTrade)
+    if enableWebhookAlerts
+        alert(buildPayload("buy"), alert.freq_once_per_bar_close)
+if shortSignal and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short, qty=contractsPerTrade)
+    if enableWebhookAlerts
+        alert(buildPayload("sell"), alert.freq_once_per_bar_close)
+
+tp1Pct = math.min(math.max(effectiveTp1ClosePct, 1.0), 99.0)
+tp2Pct = 100.0 - tp1Pct
+
+longStop = strategy.position_avg_price - effectiveStopPips * pipSize
+longTp1 = strategy.position_avg_price + effectiveTp1Pips * pipSize
+longTp2 = strategy.position_avg_price + effectiveTp2Pips * pipSize
+
+shortStop = strategy.position_avg_price + effectiveStopPips * pipSize
+shortTp1 = strategy.position_avg_price - effectiveTp1Pips * pipSize
+shortTp2 = strategy.position_avg_price - effectiveTp2Pips * pipSize
+
+if strategy.position_size > 0
+    strategy.exit("L-TP1", from_entry="Long", stop=longStop, limit=longTp1, qty_percent=tp1Pct)
+    strategy.exit("L-TP2", from_entry="Long", stop=longStop, limit=longTp2, qty_percent=tp2Pct)
+if strategy.position_size < 0
+    strategy.exit("S-TP1", from_entry="Short", stop=shortStop, limit=shortTp1, qty_percent=tp1Pct)
+    strategy.exit("S-TP2", from_entry="Short", stop=shortStop, limit=shortTp2, qty_percent=tp2Pct)
+
+longMomentumFlip = strategy.position_size > 0 and ta.crossunder(rsi, effectiveRsiLevel)
+shortMomentumFlip = strategy.position_size < 0 and ta.crossover(rsi, effectiveRsiLevel)
+closeSignal = false
+if effectiveUseMomentumExit and longMomentumFlip
+    strategy.close("Long", comment="RSI Momentum Flip")
+    closeSignal := true
+if effectiveUseMomentumExit and shortMomentumFlip
+    strategy.close("Short", comment="RSI Momentum Flip")
+    closeSignal := true
+if gexExitActiveBar and strategy.position_size > 0 and nearResistance
+    strategy.close("Long", comment="GEX Resistance")
+    closeSignal := true
+if gexExitActiveBar and strategy.position_size < 0 and nearSupport
+    strategy.close("Short", comment="GEX Support")
+    closeSignal := true
+if closeSignal and enableWebhookAlerts
+    alert(buildPayload("close"), alert.freq_once_per_bar_close)
+
+plot(fastEma, "EMA Fast", color=color.new(color.aqua, 0))
+plot(slowEma, "EMA Slow", color=color.new(color.orange, 0))
+gexResistancePlot = showGexLevels and gexDataReady ? nearestAbove : na
+gexSupportPlot = showGexLevels and gexDataReady ? nearestBelow : na
+plot(gexResistancePlot, "Nearest GEX Resistance", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(gexSupportPlot, "Nearest GEX Support", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plotshape(showEntrySignals and longSignal, title="Long Signal", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="L")
+plotshape(showEntrySignals and shortSignal, title="Short Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="S")
+
+alertcondition(longSignal, "Long Entry Setup", "9/21 scalping long setup")
+alertcondition(shortSignal, "Short Entry Setup", "9/21 scalping short setup")
+
+var table profileTbl = table.new(position.top_right, 2, 9, frame_color=color.new(color.gray, 70), border_width=1)
+if barstate.islast and showProfileTable
+    table.cell(profileTbl, 0, 0, "Setting", text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(profileTbl, 1, 0, "Active", text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(profileTbl, 0, 1, "Profile", text_color=color.white)
+    table.cell(profileTbl, 1, 1, profilePreset, text_color=color.white)
+    table.cell(profileTbl, 0, 2, "EMA", text_color=color.white)
+    table.cell(profileTbl, 1, 2, str.tostring(effectiveFastLen) + "/" + str.tostring(effectiveSlowLen), text_color=color.white)
+    table.cell(profileTbl, 0, 3, "RSI Filter", text_color=color.white)
+    table.cell(profileTbl, 1, 3, str.tostring(effectiveUseRsiFilter), text_color=color.white)
+    table.cell(profileTbl, 0, 4, "Max Entry Pips", text_color=color.white)
+    table.cell(profileTbl, 1, 4, str.tostring(effectiveMaxEntryPips, "#.##"), text_color=color.white)
+    table.cell(profileTbl, 0, 5, "Stop Pips", text_color=color.white)
+    table.cell(profileTbl, 1, 5, str.tostring(effectiveStopPips, "#.##"), text_color=color.white)
+    table.cell(profileTbl, 0, 6, "TP1 / TP2", text_color=color.white)
+    table.cell(profileTbl, 1, 6, str.tostring(effectiveTp1Pips, "#.##") + " / " + str.tostring(effectiveTp2Pips, "#.##"), text_color=color.white)
+    table.cell(profileTbl, 0, 7, "TP1 Close %", text_color=color.white)
+    table.cell(profileTbl, 1, 7, str.tostring(tp1Pct, "#.##"), text_color=color.white)
+    table.cell(profileTbl, 0, 8, "Momentum Exit", text_color=color.white)
+    table.cell(profileTbl, 1, 8, str.tostring(effectiveUseMomentumExit), text_color=color.white)

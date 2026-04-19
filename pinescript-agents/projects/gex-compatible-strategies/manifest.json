@@ -1,0 +1,31 @@
+{
+  "buckets": {
+    "multi_asset": [
+      "pinescript-agents/projects/BTC_tradingview_scalp_strategy.pine"
+    ],
+    "nq": [
+      "projects/analysis/30-minute-opening-range-breakout-beginner-auto-orb-strategy.pine",
+      "projects/analysis/bO_qQi-NJEo-strategy-profile-toggle.pine",
+      "projects/analysis/ema-9-20-crossover-intraday-auto-orb-strategy.pine",
+      "projects/analysis/high-odds-orb-breakout-auto-orb-strategy.pine",
+      "pinescript-agents/projects/generated/nq-gex-regime-template.pine"
+    ],
+    "es": [],
+    "unknown": []
+  },
+  "purpose": "Strategies verified to include GEX block hooks/variables and ready for GEX block insertion.",
+  "generated_at_utc": "2026-04-18T21:11:23.7569984Z",
+  "detection_markers": [
+    "groupGex",
+    "AUTO-GENERATED GEX BLOCK",
+    "AUTO-GENERATED HISTORICAL GEX DATASET",
+    "gexHistDayKeys",
+    "gexStrikes/gexGamma arrays",
+    "gexAsset selector"
+  ],
+  "notes": [
+    "Files are copied here for curation; originals remain in place.",
+    "ES bucket is currently empty based on scan markers and strategy() files.",
+    "Use ready blocks in pinescript-agents/projects/generated for insertion."
+  ]
+}

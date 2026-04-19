@@ -1,0 +1,256 @@
+//@version=6
+strategy("Learn The 9-20 EMA Crossover Intraday Trading Strategy In... [Auto ORB]", overlay=true, initial_capital=100000, pyramiding=0, process_orders_on_close=true, default_qty_type=strategy.fixed, default_qty_value=1)
+
+// Generated from analysis JSON:
+// projects\analysis\analysis_ema-9-20-crossover-intraday-auto-orb-strategy_20260412_100303.json
+// Model assumptions:
+// 1) Opening range breakout on first session window.
+// 2) Optional retest confirmation before entry.
+// 3) EMA trend filter (9/20), plus fixed-R partial exits.
+
+groupSession = "Session"
+groupSignals = "Signal Rules"
+groupRisk = "Risk"
+groupDisplay = "Display"
+groupExecution = "Execution"
+groupOptimization = "Optimization Presets"
+groupGex = "GEX Filter"
+groupDebug = "Debug"
+
+sessionInput = input.session("0930-1600", "Trading Session", group=groupSession, tooltip="Session used to define opening range.")
+sessionTz = input.string("America/New_York", "Session Timezone", options=["America/New_York", "America/Chicago", "Etc/UTC"], group=groupSession)
+orbMinutes = input.int(30, "Opening Range Minutes", minval=5, maxval=120, group=groupSession)
+
+profilePreset = input.string("Manual", "Profile Preset", options=["Manual", "Balanced", "Conservative", "Aggressive", "Trend", "Retest"], group=groupOptimization, tooltip="Use presets for faster parameter sweeps in Strategy Tester.")
+
+fastEmaLen = input.int(9, "Fast EMA", minval=1, group=groupSignals)
+slowEmaLen = input.int(20, "Slow EMA", minval=1, group=groupSignals)
+useTrendFilter = input.bool(true, "Use EMA Trend Filter", group=groupSignals, tooltip="Turn off to test raw ORB breakout frequency.")
+requireRetest = input.bool(false, "Require Retest Confirmation", group=groupSignals, tooltip="If enabled, price must retest the breakout level before entry.")
+
+riskPct = input.float(0.35, "Risk % (vs entry)", minval=0.05, step=0.05, group=groupRisk)
+tp1R = input.float(1.0, "TP1 (R multiple)", minval=0.5, step=0.25, group=groupRisk)
+tp2R = input.float(2.0, "TP2 (R multiple)", minval=1.0, step=0.25, group=groupRisk)
+moveStopToBreakEven = input.bool(false, "Move Stop To Break-Even After TP1", group=groupRisk)
+
+showLevels = input.bool(true, "Show ORB Levels", group=groupDisplay)
+showSignals = input.bool(true, "Show Signal Markers", group=groupDisplay)
+contractsPerTrade = input.int(1, "Contracts Per Trade", minval=1, group=groupExecution, tooltip="Use fixed contracts for futures. Percent-of-equity can round to 0 contracts.")
+useGexFilter = input.bool(true, "Use GEX Entry Filter", group=groupGex, tooltip="Long: net gamma > 0 and not near resistance. Short: net gamma <= 0 and not near support.")
+gexBandPts = input.float(20.0, "Near-Level Band (Points)", minval=0.25, step=0.25, group=groupGex)
+useGexExit = input.bool(true, "Use GEX Protective Exit", group=groupGex, tooltip="Closes long near overhead GEX resistance and short near lower GEX support.")
+useHistoricalGexDataset = input.bool(true, "Use Historical GEX Dataset", group=groupGex, tooltip="If enabled, strategy uses date-matched GEX levels from the historical dataset block when available.")
+requireMatchedHistoricalGex = input.bool(false, "Require Matched Historical GEX", group=groupGex, tooltip="If ON, strategy will only use GEX filters/exits when a same-day historical GEX row is matched.")
+applyGexToHistory = input.bool(false, "Apply GEX To Historical Bars", group=groupGex, tooltip="OFF = only apply GEX from Active-From date forward, to avoid distorting older history with current levels.")
+gexActiveFrom = input.time(1776038400000, "GEX Active From (Exchange Time)", group=groupGex)
+showGexLevels = input.bool(true, "Show Nearest GEX Levels", group=groupGex)
+showPresetTable = input.bool(false, "Show Preset Table", group=groupDebug, tooltip="Displays active effective parameters on chart.")
+
+effectiveOrbMinutes = profilePreset == "Manual" ? orbMinutes : profilePreset == "Conservative" ? 45 : profilePreset == "Aggressive" ? 20 : 30
+effectiveFastEma = profilePreset == "Manual" ? fastEmaLen : profilePreset == "Conservative" ? 12 : profilePreset == "Aggressive" ? 7 : profilePreset == "Trend" ? 15 : profilePreset == "Retest" ? 9 : 9
+effectiveSlowEma = profilePreset == "Manual" ? slowEmaLen : profilePreset == "Conservative" ? 30 : profilePreset == "Aggressive" ? 18 : profilePreset == "Trend" ? 30 : profilePreset == "Retest" ? 20 : 20
+effectiveUseTrend = profilePreset == "Manual" ? useTrendFilter : true
+effectiveRequireRetest = profilePreset == "Manual" ? requireRetest : profilePreset == "Retest"
+effectiveRiskPct = profilePreset == "Manual" ? riskPct : profilePreset == "Conservative" ? 0.25 : profilePreset == "Aggressive" ? 0.50 : 0.35
+effectiveTp1R = profilePreset == "Manual" ? tp1R : profilePreset == "Aggressive" ? 1.25 : 1.0
+effectiveTp2R = profilePreset == "Manual" ? tp2R : profilePreset == "Conservative" ? 1.75 : profilePreset == "Aggressive" ? 2.5 : 2.0
+effectiveMoveToBE = profilePreset == "Manual" ? moveStopToBreakEven : profilePreset != "Aggressive"
+
+// --- BEGIN AUTO-GENERATED GEX BLOCK (NQ_NDX) ---
+// Source file: projects/analysis/gexbot_data/gexbot_es_top_levels_20260413_041327.json
+// Symbol: "NQ_NDX"
+// Generated at UTC: "2026-04-13T04:13:28.602633+00:00"
+// Source URL: "https://api.gexbot.com/NQ_NDX/classic/zero"
+float gexSpot = 25285.91
+string gexGeneratedAt = "2026-04-13T04:13:28.602633+00:00"
+string gexSourceUrl = "https://api.gexbot.com/NQ_NDX/classic/zero"
+var float[] gexStrikes = array.from(25239.7, 25254.7, 25264.7, 25274.7, 25284.7, 25294.7, 25304.7, 25314.7, 25324.7)
+var float[] gexGamma = array.from(-615.9, 1689.39, -4958.31, -11315.05, 80023.72, 651.18, 1707.57, 1059.82, -450.89)
+// --- END AUTO-GENERATED GEX BLOCK ---
+
+// --- BEGIN AUTO-GENERATED HISTORICAL GEX DATASET (NQ_NDX) ---
+// day_key format: YYYYMMDD (exchange date)
+// pipe-delimited rows must align by index with gexHistDayKeys
+var int[] gexHistDayKeys = array.from(20260302, 20260303, 20260304, 20260305, 20260306, 20260309, 20260310, 20260311, 20260312, 20260313, 20260316, 20260317, 20260318, 20260319, 20260320, 20260323, 20260324, 20260325, 20260326, 20260327, 20260330, 20260331, 20260401, 20260402, 20260403, 20260406, 20260407, 20260408, 20260409, 20260410, 20260413)
+var string[] gexHistStrikesCsv = array.from("25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7", "25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7")
+var string[] gexHistGammaCsv = array.from("-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89", "-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89")
+// --- END AUTO-GENERATED HISTORICAL GEX DATASET (NQ_NDX) ---
+
+f_parse_csv_to_float_array(string csv, float[] outArr) =>
+    array.clear(outArr)
+    tokens = str.split(csv, "|")
+    for i = 0 to array.size(tokens) - 1
+        v = str.tonumber(array.get(tokens, i))
+        if not na(v)
+            array.push(outArr, v)
+
+var float[] activeGexStrikes = array.new_float()
+var float[] activeGexGamma = array.new_float()
+var int loadedGexDayKey = na
+var bool matchedHistoricalToday = false
+
+dayKey = year(time) * 10000 + month(time) * 100 + dayofmonth(time)
+if na(loadedGexDayKey) or dayKey != loadedGexDayKey
+    loadedGexDayKey := dayKey
+    array.clear(activeGexStrikes)
+    array.clear(activeGexGamma)
+    matchedHistoricalToday := false
+
+    matchedHistory = false
+    if useHistoricalGexDataset and array.size(gexHistDayKeys) == array.size(gexHistStrikesCsv) and array.size(gexHistDayKeys) == array.size(gexHistGammaCsv)
+        for i = 0 to array.size(gexHistDayKeys) - 1
+            if array.get(gexHistDayKeys, i) == dayKey
+                f_parse_csv_to_float_array(array.get(gexHistStrikesCsv, i), activeGexStrikes)
+                f_parse_csv_to_float_array(array.get(gexHistGammaCsv, i), activeGexGamma)
+                matchedHistory := true
+                matchedHistoricalToday := true
+                break
+
+    if not matchedHistory and not requireMatchedHistoricalGex
+        for i = 0 to array.size(gexStrikes) - 1
+            array.push(activeGexStrikes, array.get(gexStrikes, i))
+            array.push(activeGexGamma, array.get(gexGamma, i))
+
+if array.size(activeGexStrikes) != array.size(activeGexGamma)
+    runtime.error("Active GEX arrays must have the same size.")
+gexDataReady = array.size(activeGexStrikes) > 0
+
+inSession = not na(time(timeframe.period, sessionInput, sessionTz))
+newSession = inSession and not inSession[1]
+sessionEnd = not inSession and inSession[1]
+
+var int orbStartTs = na
+var int orbEndTs = na
+var float orbHigh = na
+var float orbLow = na
+var bool orbLocked = false
+var bool tradedThisSession = false
+
+if newSession
+    orbStartTs := time
+    orbEndTs := orbStartTs + effectiveOrbMinutes * 60 * 1000
+    orbHigh := high
+    orbLow := low
+    orbLocked := false
+    tradedThisSession := false
+
+if inSession and not orbLocked
+    inOrbWindow = time < orbEndTs
+    orbHigh := inOrbWindow ? (na(orbHigh) ? high : math.max(orbHigh, high)) : orbHigh
+    orbLow := inOrbWindow ? (na(orbLow) ? low : math.min(orbLow, low)) : orbLow
+    orbLocked := not inOrbWindow
+
+if sessionEnd
+    orbLocked := false
+
+fastEma = ta.ema(close, effectiveFastEma)
+slowEma = ta.ema(close, effectiveSlowEma)
+trendLong = not effectiveUseTrend or fastEma > slowEma
+trendShort = not effectiveUseTrend or fastEma < slowEma
+
+float netGex = 0.0
+float nearestAbove = na
+float nearestBelow = na
+for i = 0 to array.size(activeGexStrikes) - 1
+    strike = array.get(activeGexStrikes, i)
+    gamma = array.get(activeGexGamma, i)
+    netGex += gamma
+    if strike >= close and (na(nearestAbove) or strike < nearestAbove)
+        nearestAbove := strike
+    if strike <= close and (na(nearestBelow) or strike > nearestBelow)
+        nearestBelow := strike
+
+nearResistance = not na(nearestAbove) and math.abs(close - nearestAbove) <= gexBandPts
+nearSupport = not na(nearestBelow) and math.abs(close - nearestBelow) <= gexBandPts
+gexFilterActiveBar = useGexFilter and gexDataReady and (applyGexToHistory or time >= gexActiveFrom)
+gexExitActiveBar = useGexExit and gexDataReady and (applyGexToHistory or time >= gexActiveFrom)
+allowLongGex = not gexFilterActiveBar or (netGex > 0 and not nearResistance)
+allowShortGex = not gexFilterActiveBar or (netGex <= 0 and not nearSupport)
+
+longBreakout = orbLocked and trendLong and ta.crossover(high, orbHigh)
+shortBreakout = orbLocked and trendShort and ta.crossunder(low, orbLow)
+
+longRetest = low <= orbHigh and close > orbHigh
+shortRetest = high >= orbLow and close < orbLow
+longTriggerBase = effectiveRequireRetest ? (longBreakout and longRetest) : longBreakout
+shortTriggerBase = effectiveRequireRetest ? (shortBreakout and shortRetest) : shortBreakout
+longTrigger = longTriggerBase and allowLongGex
+shortTrigger = shortTriggerBase and allowShortGex
+
+canTrade = inSession and orbLocked and not tradedThisSession and strategy.position_size == 0
+
+if canTrade and longTrigger
+    strategy.entry("Long", strategy.long, qty=contractsPerTrade)
+    tradedThisSession := true
+
+if canTrade and shortTrigger
+    strategy.entry("Short", strategy.short, qty=contractsPerTrade)
+    tradedThisSession := true
+
+longRisk = strategy.position_avg_price * (effectiveRiskPct / 100.0)
+shortRisk = strategy.position_avg_price * (effectiveRiskPct / 100.0)
+
+longStop = strategy.position_avg_price - longRisk
+longTp1 = strategy.position_avg_price + longRisk * effectiveTp1R
+longTp2 = strategy.position_avg_price + longRisk * effectiveTp2R
+
+shortStop = strategy.position_avg_price + shortRisk
+shortTp1 = strategy.position_avg_price - shortRisk * effectiveTp1R
+shortTp2 = strategy.position_avg_price - shortRisk * effectiveTp2R
+
+if strategy.position_size > 0
+    strategy.exit("L-TP1", from_entry="Long", stop=longStop, limit=longTp1, qty_percent=50)
+    strategy.exit("L-TP2", from_entry="Long", stop=longStop, limit=longTp2, qty_percent=50)
+
+if strategy.position_size < 0
+    strategy.exit("S-TP1", from_entry="Short", stop=shortStop, limit=shortTp1, qty_percent=50)
+    strategy.exit("S-TP2", from_entry="Short", stop=shortStop, limit=shortTp2, qty_percent=50)
+
+if effectiveMoveToBE and strategy.position_size > 0 and high >= longTp1
+    strategy.exit("L-SL-BE", from_entry="Long", stop=strategy.position_avg_price)
+if effectiveMoveToBE and strategy.position_size < 0 and low <= shortTp1
+    strategy.exit("S-SL-BE", from_entry="Short", stop=strategy.position_avg_price)
+
+if gexExitActiveBar and strategy.position_size > 0 and nearResistance
+    strategy.close("Long", comment="GEX Resistance")
+if gexExitActiveBar and strategy.position_size < 0 and nearSupport
+    strategy.close("Short", comment="GEX Support")
+
+plot(showLevels and orbLocked ? orbHigh : na, "ORB High", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels and orbLocked ? orbLow : na, "ORB Low", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(fastEma, "Fast EMA", color=color.new(color.blue, 0))
+plot(slowEma, "Slow EMA", color=color.new(color.orange, 0))
+plot(showGexLevels ? nearestAbove : na, "Nearest GEX Resistance", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(showGexLevels ? nearestBelow : na, "Nearest GEX Support", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+
+plotshape(showSignals and longTrigger and canTrade, title="Long Trigger", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="L")
+plotshape(showSignals and shortTrigger and canTrade, title="Short Trigger", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="S")
+
+if longTrigger and canTrade
+    alert("Long ORB trigger detected", alert.freq_once_per_bar_close)
+if shortTrigger and canTrade
+    alert("Short ORB trigger detected", alert.freq_once_per_bar_close)
+
+var table presetTbl = table.new(position.bottom_right, 2, 10, frame_color=color.new(color.gray, 65), border_width=1)
+if barstate.islast and showPresetTable
+    table.cell(presetTbl, 0, 0, "Setting", text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(presetTbl, 1, 0, "Active", text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(presetTbl, 0, 1, "Profile", text_color=color.white)
+    table.cell(presetTbl, 1, 1, profilePreset, text_color=color.white)
+    table.cell(presetTbl, 0, 2, "ORB Minutes", text_color=color.white)
+    table.cell(presetTbl, 1, 2, str.tostring(effectiveOrbMinutes), text_color=color.white)
+    table.cell(presetTbl, 0, 3, "EMA Fast/Slow", text_color=color.white)
+    table.cell(presetTbl, 1, 3, str.tostring(effectiveFastEma) + "/" + str.tostring(effectiveSlowEma), text_color=color.white)
+    table.cell(presetTbl, 0, 4, "Trend Filter", text_color=color.white)
+    table.cell(presetTbl, 1, 4, str.tostring(effectiveUseTrend), text_color=color.white)
+    table.cell(presetTbl, 0, 5, "Require Retest", text_color=color.white)
+    table.cell(presetTbl, 1, 5, str.tostring(effectiveRequireRetest), text_color=color.white)
+    table.cell(presetTbl, 0, 6, "Risk %", text_color=color.white)
+    table.cell(presetTbl, 1, 6, str.tostring(effectiveRiskPct, "#.##"), text_color=color.white)
+    table.cell(presetTbl, 0, 7, "TP1 / TP2", text_color=color.white)
+    table.cell(presetTbl, 1, 7, str.tostring(effectiveTp1R, "#.##") + " / " + str.tostring(effectiveTp2R, "#.##"), text_color=color.white)
+    table.cell(presetTbl, 0, 8, "Move To BE", text_color=color.white)
+    table.cell(presetTbl, 1, 8, str.tostring(effectiveMoveToBE), text_color=color.white)
+    table.cell(presetTbl, 0, 9, "Contracts", text_color=color.white)
+    table.cell(presetTbl, 1, 9, str.tostring(contractsPerTrade), text_color=color.white)
+

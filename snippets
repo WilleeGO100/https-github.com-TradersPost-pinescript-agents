@@ -1,0 +1,161 @@
+# Snippets: Common Run Commands
+
+## 1) Full Pipeline (Recommended)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File pinescript-agents/tools/run_gex_pipeline.ps1
+```
+
+Runs end-to-end:
+- Pull historical GEX
+- Build NQ/ES Pine blocks
+- Refresh multi-asset strategy GEX sections
+
+---
+
+## 2) Pull Historical GEX Only
+
+```powershell
+python pinescript-agents/tools/gexbot_pull_historical.py `
+  --api-key $env:GEXBOT_API_KEY `
+  --tickers NQ_NDX,ES_SPX `
+  --aggregation-period zero `
+  --start-date 2026-04-17 `
+  --end-date 2026-04-18 `
+  --skip-weekends `
+  --top-n 20 `
+  --timeout 30 `
+  --sleep-ms 250 `
+  --out-dir pinescript-agents/projects/analysis/gexbot_data/historical
+```
+
+---
+
+## 3) Build Pine Blocks From Historical Data
+
+### NQ
+```powershell
+python pinescript-agents/tools/gexbot_nq_to_pine_block.py `
+  --dir pinescript-agents/projects/analysis/gexbot_data/historical `
+  --require-symbol NQ_NDX `
+  --history-out pinescript-agents/projects/generated/nq-gex-history.inc.pine `
+  --forward-out pinescript-agents/projects/generated/nq-gex-forward.inc.pine `
+  --future-days 30 `
+  --skip-weekends-forward
+```
+
+### ES
+```powershell
+python pinescript-agents/tools/gexbot_nq_to_pine_block.py `
+  --dir pinescript-agents/projects/analysis/gexbot_data/historical `
+  --require-symbol ES_SPX `
+  --history-out pinescript-agents/projects/generated/es-gex-history.inc.pine `
+  --forward-out pinescript-agents/projects/generated/es-gex-forward.inc.pine `
+  --future-days 30 `
+  --skip-weekends-forward
+```
+
+---
+
+## 4) Refresh Multi-Asset Strategy GEX Blocks Only
+
+```powershell
+python pinescript-agents/tools/gexbot_refresh_multi_asset_strategy.py `
+  --strategy pinescript-agents/projects/gex-compatible-strategies/multi_asset/BTC_tradingview_scalp_strategy.pine `
+  --hist-dir pinescript-agents/projects/analysis/gexbot_data/historical `
+  --max-days 45
+```
+
+### NQ Strategy Refresh (NQ-only file)
+```powershell
+python pinescript-agents/tools/gexbot_refresh_multi_asset_strategy.py `
+  --strategy pinescript-agents/projects/gex-compatible-strategies/nq/bO_qQi-NJEo-strategy-profile-toggle.pine `
+  --hist-dir pinescript-agents/projects/analysis/gexbot_data/historical `
+  --max-days 45
+```
+
+---
+
+## 5) Use venv Python Explicitly
+
+```powershell
+& .\.venv\Scripts\python.exe pinescript-agents/tools/gexbot_refresh_multi_asset_strategy.py `
+  --strategy pinescript-agents/projects/gex-compatible-strategies/multi_asset/BTC_tradingview_scalp_strategy.pine `
+  --hist-dir pinescript-agents/projects/analysis/gexbot_data/historical `
+  --max-days 45
+```
+
+---
+
+## 6) Quick Validations
+
+### Python compile check
+```powershell
+python -m py_compile pinescript-agents/tools/gexbot_pull_historical.py pinescript-agents/tools/gexbot_nq_to_pine_block.py pinescript-agents/tools/gexbot_refresh_multi_asset_strategy.py
+```
+
+### Pipeline script parse check
+```powershell
+$null = [System.Management.Automation.Language.Parser]::ParseFile('pinescript-agents/tools/run_gex_pipeline.ps1',[ref]$null,[ref]$null); if ($?) { 'OK' }
+```
+
+---
+
+## 7) Helpful Environment Vars (`.env_gex`)
+
+```env
+GEXBOT_API_KEY=...
+GEXBOT_BASE_URL=https://api.gexbot.com
+TICKERS=NQ_NDX,ES_SPX
+AGGREGATION_PERIOD=zero
+START_DATE=2026-04-17
+END_DATE=2026-04-18
+TOP_N=20
+TIMEOUT=30
+SLEEP_MS=250
+OUT_DIR=pinescript-agents/projects/analysis/gexbot_data/historical
+FUTURE_DAYS=30
+GEX_BLOCK_MAX_DAYS=45
+MULTI_ASSET_STRATEGY_PATH=pinescript-agents/projects/gex-compatible-strategies/multi_asset/BTC_tradingview_scalp_strategy.pine
+# FORCE_LARGE_PULL=1
+```
+
+---
+
+## 8) ORB Optimizer (15m + 30m)
+
+```powershell
+python pinescript-agents/tools/optimize_orb_gex_strategy.py `
+  --csv pinescript-agents/projects/btc_3m.csv `
+  --timeframes 15,30 `
+  --top 25 `
+  --out pinescript-agents/projects/analysis/orb_gex_optimization.csv
+```
+
+---
+
+## 9) Selective VM Push (Main Strategies + GEX Files Only)
+
+```powershell
+git -c safe.directory=C:/Python312/https-github.com-TradersPost-pinescript-agents add `
+  pinescript-agents/projects/gex-compatible-strategies/manifest.json `
+  pinescript-agents/projects/gex-compatible-strategies/nq/30-minute-opening-range-breakout-beginner-auto-orb-strategy.pine `
+  pinescript-agents/projects/gex-compatible-strategies/nq/ema-9-20-crossover-intraday-auto-orb-strategy.pine `
+  pinescript-agents/projects/gex-compatible-strategies/nq/high-odds-orb-breakout-auto-orb-strategy.pine `
+  pinescript-agents/projects/gex-compatible-strategies/nq/bO_qQi-NJEo-strategy-profile-toggle.pine `
+  pinescript-agents/projects/gex-compatible-strategies/multi_asset/BTC_tradingview_scalp_strategy.pine `
+  pinescript-agents/tools/gexbot_pull.py `
+  pinescript-agents/tools/gexbot_pull_historical.py `
+  pinescript-agents/tools/gexbot_nq_to_pine_block.py `
+  pinescript-agents/tools/gexbot_nq_history_to_pine_block.py `
+  pinescript-agents/tools/gexbot_refresh_multi_asset_strategy.py `
+  pinescript-agents/tools/gexbot_to_backtest_csv.py `
+  pinescript-agents/tools/run_gex_pipeline.ps1 `
+  pinescript-agents/tools/optimize_orb_gex_strategy.py `
+  snippets
+```
+
+```powershell
+git -c safe.directory=C:/Python312/https-github.com-TradersPost-pinescript-agents commit -m "Update GEX pipeline + ORB strategy set for VM"
+git -c safe.directory=C:/Python312/https-github.com-TradersPost-pinescript-agents push
+```

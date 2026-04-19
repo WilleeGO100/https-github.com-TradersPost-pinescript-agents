@@ -1,0 +1,220 @@
+//@version=6
+strategy("The 30-Minute Opening Range Breakout Strategy (Beginner t... [Auto ORB]", overlay=true, initial_capital=100000, pyramiding=0, process_orders_on_close=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// Generated from analysis JSON:
+// projects\analysis\analysis_30-minute-opening-range-breakout-strategy_20260411_201252.json
+// Model assumptions:
+// 1) Opening range breakout on first session window.
+// 2) Optional retest confirmation before entry.
+// 3) EMA trend filter (8/21), plus fixed-R partial exits.
+
+groupSession = "Session"
+groupSignals = "Signal Rules"
+groupRisk = "Risk"
+groupDisplay = "Display"
+groupExecution = "Execution"
+groupGex = "GEX Filter"
+
+sessionInput = input.session("0930-1600", "Trading Session", group=groupSession, tooltip="Session used to define opening range.")
+sessionTz = input.string("America/New_York", "Session Timezone", options=["America/New_York", "America/Chicago", "Etc/UTC"], group=groupSession)
+orbMinutes = input.int(30, "Opening Range Minutes", minval=5, maxval=120, group=groupSession)
+
+fastEmaLen = input.int(8, "Fast EMA", minval=1, group=groupSignals)
+slowEmaLen = input.int(21, "Slow EMA", minval=1, group=groupSignals)
+requireRetest = input.bool(false, "Require Retest Confirmation", group=groupSignals, tooltip="If enabled, price must retest the breakout level before entry.")
+
+riskPct = input.float(0.35, "Risk % (vs entry)", minval=0.05, step=0.05, group=groupRisk)
+tp1R = input.float(1.0, "TP1 (R multiple)", minval=0.5, step=0.25, group=groupRisk)
+tp2R = input.float(2.0, "TP2 (R multiple)", minval=1.0, step=0.25, group=groupRisk)
+moveStopToBreakEven = input.bool(true, "Move Stop To Break-Even After TP1", group=groupRisk)
+
+showLevels = input.bool(true, "Show ORB Levels", group=groupDisplay)
+showSignals = input.bool(true, "Show Signal Markers", group=groupDisplay)
+contractsPerTrade = input.int(1, "Contracts Per Trade", minval=1, group=groupExecution, tooltip="Use fixed contracts for futures.")
+
+useGexFilter = input.bool(true, "Use GEX Entry Filter", group=groupGex, tooltip="Long: net gamma > 0 and not near resistance. Short: net gamma <= 0 and not near support.")
+gexBandPts = input.float(2.0, "Near-Level Band (Points)", minval=0.25, step=0.25, group=groupGex)
+useGexExit = input.bool(true, "Use GEX Protective Exit", group=groupGex, tooltip="Closes long near overhead GEX resistance and short near lower GEX support.")
+useHistoricalGexDataset = input.bool(true, "Use Historical GEX Dataset", group=groupGex, tooltip="If enabled, strategy uses date-matched GEX levels from the historical dataset block when available.")
+requireMatchedHistoricalGex = input.bool(false, "Require Matched Historical GEX", group=groupGex, tooltip="If ON, strategy will only use GEX filters/exits when a same-day historical GEX row is matched.")
+applyGexToHistory = input.bool(false, "Apply GEX To Historical Bars", group=groupGex, tooltip="OFF = only apply GEX from Active-From date forward, to avoid distorting older history with current levels.")
+gexActiveFrom = input.time(1776038400000, "GEX Active From (Exchange Time)", group=groupGex)
+showGexLevels = input.bool(true, "Show Nearest GEX Levels", group=groupGex)
+
+// --- BEGIN AUTO-GENERATED GEX BLOCK (NQ_NDX) ---
+// Source file: projects/analysis/gexbot_data/gexbot_es_top_levels_20260413_041327.json
+// Symbol: "NQ_NDX"
+// Generated at UTC: "2026-04-13T04:13:28.602633+00:00"
+// Source URL: "https://api.gexbot.com/NQ_NDX/classic/zero"
+float gexSpot = 25285.91
+string gexGeneratedAt = "2026-04-13T04:13:28.602633+00:00"
+string gexSourceUrl = "https://api.gexbot.com/NQ_NDX/classic/zero"
+var float[] gexStrikes = array.from(25239.7, 25254.7, 25264.7, 25274.7, 25284.7, 25294.7, 25304.7, 25314.7, 25324.7)
+var float[] gexGamma = array.from(-615.9, 1689.39, -4958.31, -11315.05, 80023.72, 651.18, 1707.57, 1059.82, -450.89)
+// --- END AUTO-GENERATED GEX BLOCK ---
+
+// --- BEGIN AUTO-GENERATED HISTORICAL GEX DATASET (NQ_NDX) ---
+// day_key format: YYYYMMDD (exchange date)
+// pipe-delimited rows must align by index with gexHistDayKeys
+var int[] gexHistDayKeys = array.from(20260413)
+var string[] gexHistStrikesCsv = array.from("25239.7|25254.7|25264.7|25274.7|25284.7|25294.7|25304.7|25314.7|25324.7")
+var string[] gexHistGammaCsv = array.from("-615.9|1689.39|-4958.31|-11315.05|80023.72|651.18|1707.57|1059.82|-450.89")
+// --- END AUTO-GENERATED HISTORICAL GEX DATASET (NQ_NDX) ---
+
+f_parse_csv_to_float_array(string csv, float[] outArr) =>
+    array.clear(outArr)
+    tokens = str.split(csv, "|")
+    for i = 0 to array.size(tokens) - 1
+        v = str.tonumber(array.get(tokens, i))
+        if not na(v)
+            array.push(outArr, v)
+
+var float[] activeGexStrikes = array.new_float()
+var float[] activeGexGamma = array.new_float()
+var int loadedGexDayKey = na
+var bool matchedHistoricalToday = false
+
+dayKey = year(time) * 10000 + month(time) * 100 + dayofmonth(time)
+if na(loadedGexDayKey) or dayKey != loadedGexDayKey
+    loadedGexDayKey := dayKey
+    array.clear(activeGexStrikes)
+    array.clear(activeGexGamma)
+    matchedHistoricalToday := false
+
+    matchedHistory = false
+    if useHistoricalGexDataset and array.size(gexHistDayKeys) == array.size(gexHistStrikesCsv) and array.size(gexHistDayKeys) == array.size(gexHistGammaCsv)
+        for i = 0 to array.size(gexHistDayKeys) - 1
+            if array.get(gexHistDayKeys, i) == dayKey
+                f_parse_csv_to_float_array(array.get(gexHistStrikesCsv, i), activeGexStrikes)
+                f_parse_csv_to_float_array(array.get(gexHistGammaCsv, i), activeGexGamma)
+                matchedHistory := true
+                matchedHistoricalToday := true
+                break
+
+    if not matchedHistory and not requireMatchedHistoricalGex
+        for i = 0 to array.size(gexStrikes) - 1
+            array.push(activeGexStrikes, array.get(gexStrikes, i))
+            array.push(activeGexGamma, array.get(gexGamma, i))
+
+if array.size(activeGexStrikes) != array.size(activeGexGamma)
+    runtime.error("Active GEX arrays must have the same size.")
+gexDataReady = array.size(activeGexStrikes) > 0
+
+inSession = not na(time(timeframe.period, sessionInput, sessionTz))
+newSession = inSession and not inSession[1]
+sessionEnd = not inSession and inSession[1]
+
+var int orbStartTs = na
+var int orbEndTs = na
+var float orbHigh = na
+var float orbLow = na
+var bool orbLocked = false
+var bool tradedThisSession = false
+
+if newSession
+    orbStartTs := time
+    orbEndTs := orbStartTs + orbMinutes * 60 * 1000
+    orbHigh := high
+    orbLow := low
+    orbLocked := false
+    tradedThisSession := false
+
+if inSession and not orbLocked
+    inOrbWindow = time < orbEndTs
+    orbHigh := inOrbWindow ? (na(orbHigh) ? high : math.max(orbHigh, high)) : orbHigh
+    orbLow := inOrbWindow ? (na(orbLow) ? low : math.min(orbLow, low)) : orbLow
+    orbLocked := not inOrbWindow
+
+if sessionEnd
+    orbLocked := false
+
+fastEma = ta.ema(close, fastEmaLen)
+slowEma = ta.ema(close, slowEmaLen)
+trendLong = fastEma > slowEma
+trendShort = fastEma < slowEma
+
+longBreakout = orbLocked and trendLong and ta.crossover(high, orbHigh)
+shortBreakout = orbLocked and trendShort and ta.crossunder(low, orbLow)
+
+retestLong = low <= orbHigh and close > orbHigh
+retestShort = high >= orbLow and close < orbLow
+
+float netGex = 0.0
+float nearestAbove = na
+float nearestBelow = na
+for i = 0 to array.size(activeGexStrikes) - 1
+    strike = array.get(activeGexStrikes, i)
+    gamma = array.get(activeGexGamma, i)
+    netGex += gamma
+    if strike >= close and (na(nearestAbove) or strike < nearestAbove)
+        nearestAbove := strike
+    if strike <= close and (na(nearestBelow) or strike > nearestBelow)
+        nearestBelow := strike
+
+distToResistance = not na(nearestAbove) ? (nearestAbove - close) : na
+distToSupport = not na(nearestBelow) ? (close - nearestBelow) : na
+nearResistance = not na(distToResistance) and distToResistance <= gexBandPts
+nearSupport = not na(distToSupport) and distToSupport <= gexBandPts
+resistanceIsCloser = nearResistance and (na(distToSupport) or distToResistance <= distToSupport)
+supportIsCloser = nearSupport and (na(distToResistance) or distToSupport < distToResistance)
+gexFilterActiveBar = useGexFilter and gexDataReady and (applyGexToHistory or time >= gexActiveFrom)
+gexExitActiveBar = useGexExit and gexDataReady and (applyGexToHistory or time >= gexActiveFrom)
+allowLongGex = not gexFilterActiveBar or (netGex > 0 and not resistanceIsCloser)
+allowShortGex = not gexFilterActiveBar or (netGex <= 0 and not supportIsCloser)
+
+longTriggerBase = longBreakout and (not requireRetest or retestLong)
+shortTriggerBase = shortBreakout and (not requireRetest or retestShort)
+longTrigger = longTriggerBase and allowLongGex
+shortTrigger = shortTriggerBase and allowShortGex
+
+canTrade = inSession and orbLocked and not tradedThisSession and strategy.position_size == 0
+
+if canTrade and longTrigger
+    strategy.entry("Long", strategy.long, qty=contractsPerTrade)
+    tradedThisSession := true
+
+if canTrade and shortTrigger
+    strategy.entry("Short", strategy.short, qty=contractsPerTrade)
+    tradedThisSession := true
+
+longRisk = strategy.position_avg_price * (riskPct / 100.0)
+shortRisk = strategy.position_avg_price * (riskPct / 100.0)
+
+longStop = strategy.position_avg_price - longRisk
+longTp1 = strategy.position_avg_price + longRisk * tp1R
+longTp2 = strategy.position_avg_price + longRisk * tp2R
+
+shortStop = strategy.position_avg_price + shortRisk
+shortTp1 = strategy.position_avg_price - shortRisk * tp1R
+shortTp2 = strategy.position_avg_price - shortRisk * tp2R
+
+if strategy.position_size > 0
+    strategy.exit("L-TP1", from_entry="Long", stop=longStop, limit=longTp1, qty_percent=50)
+    strategy.exit("L-TP2", from_entry="Long", stop=longStop, limit=longTp2, qty_percent=50)
+
+if strategy.position_size < 0
+    strategy.exit("S-TP1", from_entry="Short", stop=shortStop, limit=shortTp1, qty_percent=50)
+    strategy.exit("S-TP2", from_entry="Short", stop=shortStop, limit=shortTp2, qty_percent=50)
+
+if moveStopToBreakEven and strategy.position_size > 0 and high >= longTp1
+    strategy.exit('L-SL-BE', from_entry='Long', stop=strategy.position_avg_price)
+if moveStopToBreakEven and strategy.position_size < 0 and low <= shortTp1
+    strategy.exit('S-SL-BE', from_entry='Short', stop=strategy.position_avg_price)
+if gexExitActiveBar and strategy.position_size > 0 and resistanceIsCloser
+    strategy.close("Long", comment="GEX Resistance")
+if gexExitActiveBar and strategy.position_size < 0 and supportIsCloser
+    strategy.close("Short", comment="GEX Support")
+
+plot(showLevels and orbLocked ? orbHigh : na, "ORB High", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(showLevels and orbLocked ? orbLow : na, "ORB Low", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(fastEma, "Fast EMA", color=color.new(color.blue, 0))
+plot(slowEma, "Slow EMA", color=color.new(color.orange, 0))
+plot(showGexLevels ? nearestAbove : na, "Nearest GEX Resistance", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(showGexLevels ? nearestBelow : na, "Nearest GEX Support", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+
+plotshape(showSignals and longTrigger and canTrade, title="Long Trigger", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="L")
+plotshape(showSignals and shortTrigger and canTrade, title="Short Trigger", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="S")
+
+alertcondition(longTrigger and canTrade, "Long ORB Trigger", "Long ORB trigger detected")
+alertcondition(shortTrigger and canTrade, "Short ORB Trigger", "Short ORB trigger detected")
+
