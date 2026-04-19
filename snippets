@@ -134,7 +134,18 @@ python pinescript-agents/tools/optimize_orb_gex_strategy.py `
 
 ---
 
-## 9) Selective VM Push (Main Strategies + GEX Files Only)
+## 9) BTC Scalp Optimizer
+
+```powershell
+python pinescript-agents/projects/BTC_tradingview_scalp_strategy_optimizer.py `
+  --csv pinescript-agents/projects/btc_3m.csv `
+  --top 20 `
+  --out btc_scalp_optimization_results.csv
+```
+
+---
+
+## 10) Selective VM Push (Main Strategies + GEX Files Only)
 
 ```powershell
 git -c safe.directory=C:/Python312/https-github.com-TradersPost-pinescript-agents add `
@@ -152,6 +163,9 @@ git -c safe.directory=C:/Python312/https-github.com-TradersPost-pinescript-agent
   pinescript-agents/tools/gexbot_to_backtest_csv.py `
   pinescript-agents/tools/run_gex_pipeline.ps1 `
   pinescript-agents/tools/optimize_orb_gex_strategy.py `
+  pinescript-agents/projects/BTC_tradingview_scalp_strategy_optimizer.py `
+  pinescript-agents/projects/BTC_tradingview_scalp_strategy.pine `
+  pinescript-agents/projects/btc_3m.csv `
   snippets
 ```
 

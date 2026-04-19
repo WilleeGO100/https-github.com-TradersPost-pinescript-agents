@@ -12,4 +12,7 @@ pinescript-agents/tools/gexbot_refresh_multi_asset_strategy.py
 pinescript-agents/tools/gexbot_to_backtest_csv.py
 pinescript-agents/tools/run_gex_pipeline.ps1
 pinescript-agents/tools/optimize_orb_gex_strategy.py
+pinescript-agents/projects/BTC_tradingview_scalp_strategy_optimizer.py
+pinescript-agents/projects/BTC_tradingview_scalp_strategy.pine
+pinescript-agents/projects/btc_3m.csv
 snippets
