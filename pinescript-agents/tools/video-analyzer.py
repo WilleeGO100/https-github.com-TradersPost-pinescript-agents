@@ -13,11 +13,23 @@ import re
 import json
 import sys
 import tempfile
-import hashlib
 import argparse
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+
+# Force UTF-8 console output on Windows/legacy terminals to avoid
+# UnicodeEncodeError when printing status symbols/emojis.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # ============================================================================
 # DEPENDENCY MANAGEMENT
@@ -125,14 +137,53 @@ TRADING_KEYWORDS = {
 class VideoAnalyzer:
     """Analyzes YouTube videos for trading strategy content"""
 
-    def __init__(self, use_whisper: bool = False, whisper_model: str = "base"):
+    def __init__(
+        self,
+        use_whisper: bool = False,
+        whisper_model: str = "base",
+        cookies_from_browser: str = "",
+        cookies_file: str = "",
+    ):
         self.use_whisper = use_whisper
         self.whisper_model = whisper_model
+        self.cookies_from_browser = cookies_from_browser.strip()
+        self.cookies_file = cookies_file.strip()
         self._whisper_model_loaded = None
 
         # Ensure directories exist
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _apply_cookie_options(self, ydl_opts: Dict) -> Dict:
+        """Attach optional cookie settings to yt-dlp options."""
+        if self.cookies_file:
+            ydl_opts['cookiefile'] = self.cookies_file
+        if self.cookies_from_browser:
+            # Accept forms like "chrome" or "chrome:Default" or "firefox:profile"
+            parts = [p for p in self.cookies_from_browser.split(':') if p]
+            if len(parts) == 1:
+                ydl_opts['cookiesfrombrowser'] = (parts[0],)
+            elif len(parts) >= 2:
+                ydl_opts['cookiesfrombrowser'] = tuple(parts)
+        return ydl_opts
+
+    def _apply_runtime_options(self, ydl_opts: Dict) -> Dict:
+        """Attach yt-dlp JS runtime settings to reduce YouTube bot-check failures."""
+        ydl_opts['js_runtimes'] = {"node": {}}
+        ydl_opts['remote_components'] = {"ejs:github"}
+        ydl_opts['cachedir'] = ".yt-dlp-cache"
+        return ydl_opts
+
+    def _is_cookie_copy_error(self, error: Exception) -> bool:
+        """Detect yt-dlp browser cookie copy failures (common on locked Chrome DBs)."""
+        text = str(error).lower()
+        return (
+            "could not copy chrome cookie database" in text
+            or "cookiesfrombrowser" in text and "cookie database" in text
+            or "could not copy" in text and "cookie" in text
+            or "failed to decrypt with dpapi" in text
+            or "dpapi" in text and "decrypt" in text
+        )
 
     # ========================================================================
     # URL PARSING
@@ -163,11 +214,13 @@ class VideoAnalyzer:
         print("📋 Fetching video metadata...")
         set_status("🎬 Video: Fetching metadata...")
 
-        ydl_opts = {
+        base_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
         }
+        base_opts = self._apply_runtime_options(base_opts)
+        ydl_opts = self._apply_cookie_options(dict(base_opts))
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -185,12 +238,63 @@ class VideoAnalyzer:
                     'thumbnail': info.get('thumbnail', ''),
                 }
         except Exception as e:
+            # Retry without browser cookies if Chrome cookie DB is locked/unreadable.
+            if self._is_cookie_copy_error(e) and (self.cookies_from_browser or self.cookies_file):
+                print("⚠️  Cookie access failed. Retrying metadata without browser cookies...")
+                try:
+                    with yt_dlp.YoutubeDL(base_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        return {
+                            'title': info.get('title', 'Unknown'),
+                            'author': info.get('uploader', 'Unknown'),
+                            'channel_url': info.get('uploader_url', ''),
+                            'duration': info.get('duration', 0),
+                            'duration_string': info.get('duration_string', 'Unknown'),
+                            'description': (info.get('description', '') or '')[:1000],
+                            'upload_date': info.get('upload_date', 'Unknown'),
+                            'view_count': info.get('view_count', 0),
+                            'like_count': info.get('like_count', 0),
+                            'thumbnail': info.get('thumbnail', ''),
+                        }
+                except Exception as retry_err:
+                    print(f"⚠️  Could not fetch metadata: {retry_err}")
+                    return {'title': 'Unknown', 'author': 'Unknown', 'error': str(retry_err)}
+
             print(f"⚠️  Could not fetch metadata: {e}")
             return {'title': 'Unknown', 'author': 'Unknown', 'error': str(e)}
 
     # ========================================================================
     # TRANSCRIPT EXTRACTION
     # ========================================================================
+
+    def _normalize_text(self, text: str) -> str:
+        """Normalize transcript text for downstream parsing."""
+        text = re.sub(r'\[.*?\]', '', text)  # Remove [Music], [Applause], etc.
+        text = re.sub(r'♪.*?♪', '', text)  # Remove ♪ music lyrics markers ♪
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def _sentences_from_transcript_segments(self, transcript_data) -> List[str]:
+        """Build sentence-like units from transcript segments, even with poor punctuation."""
+        sentences: List[str] = []
+        for entry in transcript_data:
+            if hasattr(entry, 'text'):
+                segment = entry.text
+            elif isinstance(entry, dict):
+                segment = entry.get('text', '')
+            else:
+                segment = str(entry)
+
+            segment = self._normalize_text(segment)
+            if not segment:
+                continue
+
+            # If segment has no terminal punctuation, add a period to improve splitting quality.
+            if segment[-1] not in ".!?":
+                segment = segment + "."
+            sentences.append(segment)
+
+        return sentences
 
     def get_transcript_from_youtube(self, video_id: str) -> Tuple[Optional[str], str]:
         """Try to get transcript from YouTube's captions (fastest method)"""
@@ -237,22 +341,9 @@ class VideoAnalyzer:
             # Fetch the actual transcript
             transcript_data = transcript.fetch()
 
-            # Combine all text segments (handle both dict and named tuple formats)
-            full_text_parts = []
-            for entry in transcript_data:
-                if hasattr(entry, 'text'):
-                    full_text_parts.append(entry.text)
-                elif isinstance(entry, dict):
-                    full_text_parts.append(entry.get('text', ''))
-                else:
-                    full_text_parts.append(str(entry))
-
-            full_text = ' '.join(full_text_parts)
-
-            # Clean up the text
-            full_text = re.sub(r'\[.*?\]', '', full_text)  # Remove [Music], [Applause], etc.
-            full_text = re.sub(r'♪.*?♪', '', full_text)  # Remove ♪ music lyrics markers ♪
-            full_text = re.sub(r'\s+', ' ', full_text).strip()
+            # Build transcript with sentence boundaries preserved for better rule extraction.
+            sentence_segments = self._sentences_from_transcript_segments(transcript_data)
+            full_text = " ".join(sentence_segments)
 
             return full_text, source
 
@@ -291,11 +382,12 @@ class VideoAnalyzer:
 
             with tempfile.TemporaryDirectory() as temp_dir:
                 audio_path = os.path.join(temp_dir, 'audio.mp3')
+                outtmpl = os.path.join(temp_dir, 'audio.%(ext)s')
 
                 print("   📥 Downloading audio...")
                 ydl_opts = {
                     'format': 'bestaudio/best',
-                    'outtmpl': audio_path.replace('.mp3', '.%(ext)s'),
+                    'outtmpl': outtmpl,
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': 'mp3',
@@ -304,13 +396,55 @@ class VideoAnalyzer:
                     'quiet': True,
                     'no_warnings': True,
                 }
+                ydl_opts = self._apply_runtime_options(ydl_opts)
+                ydl_opts = self._apply_cookie_options(ydl_opts)
+                retry_without_cookies = False
 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                except Exception as e:
+                    if self._is_cookie_copy_error(e) and (self.cookies_from_browser or self.cookies_file):
+                        print("   ⚠️  Cookie access failed, retrying without browser cookies...")
+                        retry_without_cookies = True
+                        ydl_opts_no_cookies = {
+                            'format': 'bestaudio/best',
+                            'outtmpl': outtmpl,
+                            'postprocessors': [{
+                                'key': 'FFmpegExtractAudio',
+                                'preferredcodec': 'mp3',
+                                'preferredquality': '192',
+                            }],
+                            'quiet': True,
+                            'no_warnings': True,
+                        }
+                        ydl_opts_no_cookies = self._apply_runtime_options(ydl_opts_no_cookies)
+                        try:
+                            with yt_dlp.YoutubeDL(ydl_opts_no_cookies) as ydl:
+                                ydl.download([url])
+                            e = None
+                        except Exception as retry_e:
+                            e = retry_e
+
+                    # FFmpeg post-processing can fail on some Windows setups.
+                    # Fallback to a direct audio download and let Whisper decode it.
+                    if e is not None:
+                        print(f"   ⚠️  FFmpeg conversion failed, retrying direct audio download: {e}")
+                        ydl_opts_fallback = {
+                            'format': 'bestaudio/best',
+                            'outtmpl': outtmpl,
+                            'quiet': True,
+                            'no_warnings': True,
+                        }
+                        ydl_opts_fallback = self._apply_runtime_options(ydl_opts_fallback)
+                        if not retry_without_cookies:
+                            ydl_opts_fallback = self._apply_cookie_options(ydl_opts_fallback)
+                        with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
+                            ydl.download([url])
 
                 # Find the downloaded file
                 for f in os.listdir(temp_dir):
-                    if f.endswith('.mp3'):
+                    if f.lower().endswith(('.mp3', '.m4a', '.webm', '.opus', '.wav', '.aac', '.flac', '.mp4')):
                         audio_path = os.path.join(temp_dir, f)
                         break
 
@@ -321,7 +455,7 @@ class VideoAnalyzer:
                 set_status("🎬 Video: Transcribing with Whisper...")
                 result = self._whisper_model_loaded.transcribe(audio_path)
 
-                return result["text"], "whisper"
+                return self._normalize_text(result["text"]), "whisper"
 
         except Exception as e:
             print(f"⚠️  Whisper transcription failed: {e}")
@@ -336,6 +470,23 @@ class VideoAnalyzer:
             with open(cache_file, 'r') as f:
                 cached = json.load(f)
                 return cached['text'], cached['source'] + "_cached"
+
+        # In forced Whisper mode, try Whisper first, then fall back to captions.
+        if self.use_whisper:
+            transcript, source = self.get_transcript_from_whisper(url)
+            if transcript:
+                with open(cache_file, 'w') as f:
+                    json.dump({'text': transcript, 'source': source}, f)
+                return transcript, source
+
+            print("🔄 Whisper failed, trying YouTube captions as fallback...")
+            transcript, source = self.get_transcript_from_youtube(video_id)
+            if transcript:
+                with open(cache_file, 'w') as f:
+                    json.dump({'text': transcript, 'source': source}, f)
+                return transcript, source
+
+            return transcript, source
 
         # Try YouTube captions first (much faster)
         if not self.use_whisper:
@@ -409,6 +560,12 @@ class VideoAnalyzer:
 
         return found_concepts
 
+    def _match_rule_signal(self, sentence_lower: str, terms: List[str]) -> bool:
+        for term in terms:
+            if re.search(rf"\b{re.escape(term)}\b", sentence_lower):
+                return True
+        return False
+
     def identify_strategy_components(self, text: str) -> Dict:
         """Identify specific strategy components from transcript"""
         components = {
@@ -422,31 +579,42 @@ class VideoAnalyzer:
         }
 
         # Split into sentences
-        sentences = re.split(r'[.!?]', text)
+        # Use punctuation split first, then fall back to transcript fragment split.
+        punctuation_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        if len(punctuation_sentences) < 10:
+            punctuation_sentences = [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
+        sentences = punctuation_sentences
 
         entry_keywords = ['enter', 'buy', 'long', 'entry', 'go long', 'open', 'get in']
-        exit_keywords = ['exit', 'sell', 'close', 'take profit', 'stop loss', 'get out', 'short']
-        risk_keywords = ['risk', 'position size', 'money management', 'drawdown', 'stop', 'loss']
+        exit_keywords = ['exit', 'sell', 'close', 'take profit', 'stop loss', 'get out', 'close position']
+        risk_keywords = ['risk', 'position size', 'money management', 'drawdown', 'stop loss', 'trailing stop', 'break even']
+        condition_phrases = ['when', 'if', 'once', 'only if', 'as soon as', 'provided that', 'after']
+        noisy_prefixes = ['welcome', 'subscribe', 'like and subscribe', 'disclaimer', 'not financial advice']
 
         for sentence in sentences:
             sentence = sentence.strip()
-            if len(sentence) < 10:
+            if len(sentence) < 12:
                 continue
 
             sentence_lower = sentence.lower()
+            if any(prefix in sentence_lower for prefix in noisy_prefixes):
+                continue
+            if len(sentence.split()) > 45:
+                # Long run-on narration is usually poor signal for deterministic trading rules.
+                continue
 
             # Entry conditions
-            if any(word in sentence_lower for word in entry_keywords):
-                if 'when' in sentence_lower or 'if' in sentence_lower or 'once' in sentence_lower:
+            if self._match_rule_signal(sentence_lower, entry_keywords):
+                if any(phrase in sentence_lower for phrase in condition_phrases):
                     components['entry_conditions'].append(sentence)
 
             # Exit conditions
-            if any(word in sentence_lower for word in exit_keywords):
-                if 'when' in sentence_lower or 'if' in sentence_lower or 'at' in sentence_lower:
+            if self._match_rule_signal(sentence_lower, exit_keywords):
+                if any(phrase in sentence_lower for phrase in condition_phrases + ['at']):
                     components['exit_conditions'].append(sentence)
 
             # Risk management
-            if any(word in sentence_lower for word in risk_keywords):
+            if self._match_rule_signal(sentence_lower, risk_keywords):
                 components['risk_management'].append(sentence)
 
             # Key rules (sentences with "always", "never", "must", "important")
@@ -457,6 +625,18 @@ class VideoAnalyzer:
         for key in components:
             if isinstance(components[key], list):
                 components[key] = components[key][:5]
+
+        # Deduplicate while preserving order.
+        for key in ['entry_conditions', 'exit_conditions', 'risk_management', 'key_rules']:
+            deduped = []
+            seen = set()
+            for item in components[key]:
+                normalized = item.lower()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                deduped.append(item)
+            components[key] = deduped[:5]
 
         return components
 
@@ -677,7 +857,7 @@ class VideoAnalyzer:
         metadata['url'] = url
 
         if 'error' in metadata and metadata.get('title') == 'Unknown':
-            return {'success': False, 'error': f"Could not access video: {metadata['error']}"}
+            print("⚠️  Metadata access failed. Continuing with transcript-only analysis...")
 
         print(f"📺 Title: {metadata['title'][:50]}...")
 
@@ -751,10 +931,19 @@ Examples:
                         help='Whisper model size (default: base)')
     parser.add_argument('--json', action='store_true',
                         help='Output raw JSON instead of formatted summary')
+    parser.add_argument('--cookies-from-browser', default='',
+                        help='Pass browser cookies to yt-dlp (e.g. chrome or chrome:Default).')
+    parser.add_argument('--cookies', default='',
+                        help='Path to cookies.txt file for yt-dlp.')
 
     args = parser.parse_args()
 
-    analyzer = VideoAnalyzer(use_whisper=args.whisper, whisper_model=args.model)
+    analyzer = VideoAnalyzer(
+        use_whisper=args.whisper,
+        whisper_model=args.model,
+        cookies_from_browser=args.cookies_from_browser,
+        cookies_file=args.cookies,
+    )
     result = analyzer.analyze(args.url)
 
     if args.json:
